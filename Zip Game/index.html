@@ -1,0 +1,586 @@
+<!doctype html>
+<!--
+  Zip-style Logic Puzzle
+  Single-file HTML/CSS/JS you can paste into VS Code and open in browser.
+
+  Features implemented:
+  - Drag-to-draw path (mouse + touch) across a square grid
+  - Numbers must be touched in order (1 -> 2 -> 3 -> ...)
+  - Path cannot cross itself or revisit cells
+  - Smooth SVG path that follows drag; glowing animated trail
+  - Hover/drag cell highlights
+  - Restart, Next Level, Theme Toggle (light/dark)
+  - Multiple levels, simple timer and score tracking
+  - Subtle sound (WebAudio) and haptic (vibrate) feedback
+  - Responsive layout for desktop and mobile
+
+  Notes:
+  - This is vanilla JS + CSS (no frameworks). If you prefer React + Tailwind,
+    I can convert it — tell me and I'll produce that version.
+  - Open the file directly in the browser or use Live Server in VS Code.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Zip-style Puzzle</title>
+  <style>
+    :root{
+      --bg: #0b1020;
+      --panel: rgba(255,255,255,0.03);
+      --muted: rgba(255,255,255,0.6);
+      --accent: linear-gradient(135deg,#7cf7ff 0%,#7affc9 60%,#9b7aff 100%);
+      --glow: 0 6px 24px rgba(124,247,255,0.08), 0 1px 2px rgba(0,0,0,0.6);
+      --cell-size: 64px;
+    }
+    [data-theme="light"]{
+      --bg: #f6f8fb;
+      --panel: rgba(0,0,0,0.03);
+      --muted: rgba(0,0,0,0.6);
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0;
+      font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial;
+      background: radial-gradient(1200px 600px at 10% 10%, rgba(122,80,255,0.07), transparent),
+                  radial-gradient(900px 400px at 90% 90%, rgba(123,247,255,0.04), transparent),
+                  var(--bg);
+      color: #e6eef8;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      padding:24px;
+    }
+
+    .container{
+      width:100%;
+      max-width:960px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+      border-radius:18px;
+      padding:20px;
+      box-shadow: var(--glow);
+      display:grid;
+      grid-template-columns: 1fr 320px;
+      gap:20px;
+    }
+
+    .left{
+      padding:18px;
+      display:flex;
+      flex-direction:column;
+      gap:14px;
+    }
+
+    .topbar{
+      display:flex;align-items:center;justify-content:space-between;gap:12px;
+    }
+
+    .title{font-weight:700;font-size:20px}
+    .subtitle{font-size:13px;color:var(--muted)}
+
+    .controls{display:flex;gap:8px;align-items:center}
+    .btn{
+      background:var(--panel);
+      border:1px solid rgba(255,255,255,0.04);
+      padding:8px 12px;border-radius:10px;cursor:pointer;font-weight:600;
+      backdrop-filter: blur(6px);
+    }
+    .btn:active{transform:translateY(1px)}
+
+    .grid-wrap{
+      --n:5;
+      aspect-ratio:1/1;
+      background:linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.02));
+      border-radius:12px;padding:12px;position:relative;overflow:hidden;
+      display:grid;place-items:center;
+    }
+
+    /* Grid area — cells are positioned via CSS grid */
+    .grid{
+      display:grid;grid-template-columns:repeat(var(--n),1fr);grid-template-rows:repeat(var(--n),1fr);
+      gap:8px;width:100%;height:100%;max-width:680px;max-height:680px;touch-action:none;
+      position:relative;
+    }
+
+    .cell{
+      background: linear-gradient(180deg, rgba(255,255,255,0.015), rgba(255,255,255,0.01));
+      border-radius:8px;display:flex;align-items:center;justify-content:center;position:relative;
+      user-select:none; -webkit-user-select:none; cursor:crosshair;transition:transform .12s ease, box-shadow .12s ease;
+      box-shadow: inset 0 -6px 18px rgba(0,0,0,0.35);
+    }
+    .cell:hover{transform:translateY(-6px);}
+
+    .cell .num{
+      font-weight:800;font-size:18px;line-height:1;color:transparent;background-clip:text;-webkit-background-clip:text;
+      background-image: var(--accent);
+    }
+
+    .cell.light{
+      background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03));
+      color:#0b1020;
+    }
+
+    .cell.active{
+      box-shadow:0 6px 24px rgba(123,247,255,0.12), inset 0 2px 6px rgba(255,255,255,0.02);
+      transform:scale(1.04);
+    }
+
+    /* visited styles */
+    .cell.visited{background:linear-gradient(90deg, rgba(124,247,255,0.06), rgba(123,175,255,0.03));}
+
+    /* SVG overlay for path */
+    .svg-overlay{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}
+    svg{width:100%;height:100%;overflow:visible}
+
+    .trail{fill:none;stroke-width:18;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 8px 20px rgba(124,247,255,0.08));}
+
+    /* messages */
+    .message{
+      position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;font-size:34px;font-weight:800;
+      color:#fff;text-shadow:0 6px 18px rgba(0,0,0,0.6);transform-origin:center;opacity:0;transition:opacity .25s ease,transform .25s ease;
+    }
+    .message.show{opacity:1;pointer-events:auto}
+
+    .sidebar{
+      padding:18px;background:linear-gradient(180deg, rgba(255,255,255,0.015), rgba(255,255,255,0.01));border-radius:12px;display:flex;flex-direction:column;gap:12px;
+    }
+
+    .panel{background:var(--panel);padding:12px;border-radius:12px}
+
+    .levels{display:flex;gap:8px;flex-wrap:wrap}
+    .level-btn{padding:8px 10px;border-radius:10px;background:transparent;border:1px solid rgba(255,255,255,0.03);cursor:pointer}
+
+    .meta{display:flex;flex-direction:column;gap:6px}
+    .meta .row{display:flex;justify-content:space-between}
+
+    /* small screens stacking */
+    @media (max-width:920px){
+      .container{grid-template-columns:1fr;}
+      .sidebar{order:2}
+      .left{order:1}
+      .grid-wrap{height:min(92vw,640px)}
+    }
+
+    /* subtle animations for the trail */
+    .trail.glow{stroke: url(#gradientStroke);}
+
+    /* success / fail styles */
+    .message.win{color: #eafff4;}
+    .message.fail{color:#ffd6d6}
+
+    /* tiny accessibility niceties */
+    .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+  </style>
+</head>
+<body>
+  <div class="container" id="app" data-theme="dark">
+    <div class="left">
+      <div class="topbar">
+        <div>
+          <div class="title">Zip — Logic Path Puzzle</div>
+          <div class="subtitle">Drag to connect numbers in sequence. No crossing. Smooth animated path.</div>
+        </div>
+        <div class="controls">
+          <button class="btn" id="restartBtn">Restart</button>
+          <button class="btn" id="nextBtn">Next Level</button>
+          <button class="btn" id="themeBtn">Theme Toggle</button>
+        </div>
+      </div>
+
+      <div class="grid-wrap">
+        <div class="grid" id="grid" style="--n:5" aria-label="Zip grid"></div>
+
+        <!-- SVG overlay for the drawing path -->
+        <div class="svg-overlay" id="svgOverlay">
+          <svg id="svg" viewBox="0 0 100 100" preserveAspectRatio="none">
+            <defs>
+              <linearGradient id="gradientStroke" x1="0%" x2="100%">
+                <stop offset="0%" stop-color="#7cf7ff"/>
+                <stop offset="60%" stop-color="#7affc9"/>
+                <stop offset="100%" stop-color="#9b7aff"/>
+              </linearGradient>
+            </defs>
+            <path class="trail glow" id="trailPath" d="" stroke="url(#gradientStroke)"/>
+            <path class="trail" id="ghostPath" d="" stroke="rgba(255,255,255,0.08)"/>
+          </svg>
+        </div>
+
+        <div class="message" id="messageBox"></div>
+      </div>
+
+      <div style="display:flex;gap:14px;align-items:center;justify-content:space-between">
+        <div class="meta panel">
+          <div class="row"><div>Level</div><div id="levelLabel">1</div></div>
+          <div class="row"><div>Time</div><div id="timerLabel">00:00</div></div>
+          <div class="row"><div>Score</div><div id="scoreLabel">0</div></div>
+        </div>
+
+        <div class="panel" style="flex:1;display:flex;align-items:center;justify-content:center">
+          <small class="subtitle">Tip: Start by pressing/tapping the <strong>1</strong> and drag through adjacent cells to reach the next numbers.</small>
+        </div>
+      </div>
+    </div>
+
+    <aside class="sidebar">
+      <div class="panel">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div style="font-weight:700">Levels</div>
+          <div style="font-size:12px;color:var(--muted)">Choose</div>
+        </div>
+        <div class="levels" id="levels"></div>
+      </div>
+
+      <div class="panel">
+        <div style="font-weight:700">How to play</div>
+        <ol style="margin:8px 0;padding-left:18px;color:var(--muted)">
+          <li>Tap/Click and hold on the cell containing <strong>1</strong>.</li>
+          <li>Drag over adjacent cells (up/down/left/right). Diagonals are not allowed.</li>
+          <li>You must visit numbered cells in increasing order. Can't skip or touch a wrong number.</li>
+        </ol>
+      </div>
+
+      <div class="panel" style="text-align:center">
+        <small class="subtitle">Built with vanilla JS — responsive & mobile-friendly.</small>
+      </div>
+    </aside>
+  </div>
+
+  <script>
+    /* ===== Game Data (levels) =====
+       Each level: { n, numbers }
+       numbers is an array of {r,c,val} (0-indexed row/col) - used to place numbered tiles
+    */
+    const LEVELS = [
+      { n:5, numbers:[ {r:0,c:1,val:1}, {r:0,c:3,val:2}, {r:2,c:4,val:3}, {r:3,c:2,val:4}, {r:4,c:0,val:5} ] },
+      { n:5, numbers:[ {r:0,c:0,val:1},{r:0,c:4,val:2},{r:2,c:2,val:3},{r:4,c:1,val:4},{r:4,c:4,val:5} ] },
+      { n:6, numbers:[ {r:0,c:2,val:1},{r:1,c:2,val:2},{r:2,c:2,val:3},{r:3,c:2,val:4},{r:4,c:2,val:5},{r:5,c:2,val:6} ] },
+      // You can add more complicated layouts here
+    ];
+
+    /* ===== Globals / DOM ===== */
+    const gridEl = document.getElementById('grid');
+    const svg = document.getElementById('svg');
+    const trailPath = document.getElementById('trailPath');
+    const ghostPath = document.getElementById('ghostPath');
+    const messageBox = document.getElementById('messageBox');
+
+    const restartBtn = document.getElementById('restartBtn');
+    const nextBtn = document.getElementById('nextBtn');
+    const themeBtn = document.getElementById('themeBtn');
+
+    const levelLabel = document.getElementById('levelLabel');
+    const timerLabel = document.getElementById('timerLabel');
+    const scoreLabel = document.getElementById('scoreLabel');
+    const levelsWrap = document.getElementById('levels');
+
+    let currentLevelIndex = 0;
+    let n = 5;
+    let numbered = []; // map of index -> number value if present
+    let maxNumber = 0;
+
+    // path state
+    let path = []; // array of cell indices visited in order
+    let visited = new Set();
+    let drawing = false;
+    let expectedNext = 1; // next numbered tile value the player must touch
+
+    // timer & score
+    let timerInterval = null;
+    let secondsElapsed = 0;
+    let score = 0;
+
+    // audio context for short tones
+    const audioCtx = (typeof window.AudioContext !== 'undefined') ? new window.AudioContext() : null;
+
+    function beep(freq=440, duration=0.06, gain=0.06){
+      if(!audioCtx) return;
+      const o = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      o.type = 'sine'; o.frequency.value = freq;
+      g.gain.value = gain;
+      o.connect(g); g.connect(audioCtx.destination);
+      o.start();
+      setTimeout(()=>{ o.stop(); }, duration*1000);
+    }
+
+    /* ===== Utilities ===== */
+    function idxFromRC(r,c){ return r*n + c }
+    function rcFromIdx(idx){ return [ Math.floor(idx/n), idx % n ] }
+
+    function setMessage(text, state='win'){
+      messageBox.textContent = text;
+      messageBox.className = 'message ' + (state==='win' ? 'win' : 'fail') + ' show';
+      if(state === 'win'){
+        messageBox.style.transform = 'scale(1.03)';
+      } else {
+        messageBox.style.transform = 'translateY(6px)';
+      }
+      // subtle vibration
+      if(navigator.vibrate) navigator.vibrate(state==='win' ? [40,20,40] : [120]);
+      // sound
+      if(state==='win') beep(880,0.09,0.08); else beep(180,0.18,0.08);
+      // fade after 1.6s
+      clearTimeout(messageBox._hideTO);
+      messageBox._hideTO = setTimeout(()=>{
+        messageBox.classList.remove('show');
+        messageBox.style.transform='';
+      }, 1600);
+    }
+
+    function resetMessage(){ messageBox.classList.remove('show'); }
+
+    /* ===== Setup levels UI ===== */
+    function buildLevelButtons(){
+      levelsWrap.innerHTML='';
+      LEVELS.forEach((lv,i)=>{
+        const b = document.createElement('button');
+        b.className='level-btn'; b.textContent = 'Level ' + (i+1);
+        b.onclick = ()=>{ loadLevel(i); }
+        levelsWrap.appendChild(b);
+      })
+    }
+
+    /* ===== Build grid DOM for current level ===== */
+    function renderGrid(){
+      gridEl.innerHTML = '';
+      gridEl.style.setProperty('--n', n);
+      gridEl.style.gridTemplateColumns = `repeat(${n},1fr)`;
+      gridEl.style.gridTemplateRows = `repeat(${n},1fr)`;
+
+      // create cells
+      for(let r=0;r<n;r++){
+        for(let c=0;c<n;c++){
+          const idx = idxFromRC(r,c);
+          const cell = document.createElement('div');
+          cell.className = 'cell';
+          cell.dataset.idx = idx;
+          cell.style.touchAction = 'none';
+          cell.style.userSelect = 'none';
+          cell.style.display='flex';
+          cell.style.alignItems='center';
+          cell.style.justifyContent='center';
+
+          // attach event to highlight on pointer enter for desktop hover feedback
+          cell.addEventListener('pointerenter', (e)=>{
+            if(drawing){ handlePointerOverCell(cell); }
+          });
+
+          const numVal = numbered[idx];
+          if(numVal){
+            const span = document.createElement('div'); span.className='num'; span.textContent = numVal;
+            cell.appendChild(span);
+          }
+
+          gridEl.appendChild(cell);
+        }
+      }
+
+      // ensure svg overlays match grid size by mapping coordinate system 0..100
+      // we'll compute center positions later
+      updateTrail();
+    }
+
+    /* ===== Mouse & Touch handling (pointer events) ===== */
+    // compute which cell index is under a clientX,clientY quickly using grid bounding box
+    function cellIdxFromPoint(clientX, clientY){
+      const rect = gridEl.getBoundingClientRect();
+      const x = clientX - rect.left; const y = clientY - rect.top;
+      if(x<0||y<0||x>rect.width||y>rect.height) return null;
+      const cellW = rect.width / n; const cellH = rect.height / n;
+      const c = Math.floor(x / cellW); const r = Math.floor(y / cellH);
+      return idxFromRC(r,c);
+    }
+
+    function handlePointerDown(e){
+      if(e.pointerType === 'mouse' && e.button !== 0) return; // only primary
+      const idx = cellIdxFromPoint(e.clientX, e.clientY);
+      if(idx===null) return;
+      // must start on numbered tile 1
+      if(numbered[idx] !== 1){
+        // small shake / feedback
+        beep(220,0.06,0.04);
+        return;
+      }
+      // start drawing
+      drawing = true; path = []; visited.clear(); expectedNext = 1; resetMessage(); secondsElapsed = 0; startTimer();
+      addToPath(idx);
+      // capture pointer on grid so moves tracked outside
+      gridEl.setPointerCapture(e.pointerId);
+    }
+
+    function handlePointerMove(e){
+      if(!drawing) return;
+      const idx = cellIdxFromPoint(e.clientX, e.clientY);
+      if(idx===null) return;
+      // If pointer over cell, attempt to move
+      const cell = gridEl.querySelector(`[data-idx='${idx}']`);
+      if(cell) handlePointerOverCell(cell);
+    }
+
+    function handlePointerUp(e){
+      if(!drawing) return;
+      drawing = false;
+      // check victory: visited all numbered tiles in order
+      if(expectedNext > maxNumber){ // we touched all numbers in order
+        // success
+        stopTimer();
+        const timeBonus = Math.max(0, 120 - secondsElapsed); // simple bonus
+        score += 100 + timeBonus;
+        scoreLabel.textContent = score;
+        setMessage('You Win 🎉','win');
+        // finish trail with subtle flourish
+        finishTrail();
+      } else {
+        // failed to complete sequence
+        stopTimer();
+        setMessage('Try Again ❌','fail');
+        // small vibration / sound already invoked in setMessage
+      }
+      // release any pointer capture
+      try{ gridEl.releasePointerCapture(e.pointerId) }catch(e){}
+      // after fail, keep path visible briefly then reset visited but not numbers
+      setTimeout(()=>{ clearPath(); }, 800);
+    }
+
+    function handlePointerOverCell(cell){
+      const idx = Number(cell.dataset.idx);
+      if(visited.has(idx)) return; // cannot revisit
+      // must be adjacent to last path cell, unless starting
+      const last = path.length ? path[path.length-1] : null;
+      if(last !== null && !isAdjacent(last, idx)) return; // only orthogonal moves allowed
+
+      const numVal = numbered[idx] || 0;
+      if(numVal){
+        // if it's a numbered tile, it must equal expectedNext
+        if(numVal !== expectedNext) {
+          // wrong number -> fail immediate
+          setMessage('Wrong Order ❌','fail');
+          beep(150,0.14,0.06);
+          drawing = false; // stop drawing
+          return;
+        }
+      }
+
+      // All good: append
+      addToPath(idx);
+    }
+
+    function isAdjacent(a,b){
+      const [ar,ac] = rcFromIdx(a); const [br,bc] = rcFromIdx(b);
+      const dr = Math.abs(ar-br), dc = Math.abs(ac-bc);
+      return (dr+dc)===1;
+    }
+
+    function addToPath(idx){
+      if(visited.has(idx)) return;
+      visited.add(idx); path.push(idx);
+      // mark DOM
+      const cell = gridEl.querySelector(`[data-idx='${idx}']`);
+      if(cell) cell.classList.add('visited','active');
+      // if this cell contains the next number, increment expectedNext
+      if(numbered[idx] && numbered[idx] === expectedNext){
+        expectedNext++;
+        // small tone/haptic
+        if(numbered[idx] % 2 === 0) beep(680,0.05,0.04); else beep(440,0.05,0.04);
+        if(navigator.vibrate) navigator.vibrate(8);
+      } else {
+        // neutral tone for empty cell
+        beep(520,0.03,0.02);
+      }
+      updateTrail();
+    }
+
+    function clearPath(){
+      path = []; visited.clear(); expectedNext = 1;
+      // clear DOM visited classes
+      gridEl.querySelectorAll('.cell').forEach(c=>{ c.classList.remove('visited','active'); });
+      updateTrail();
+    }
+
+    function finishTrail(){
+      // animate trail (pulse)
+      trailPath.style.transition = 'stroke-width .3s ease, opacity .6s ease';
+      trailPath.style.strokeWidth = 28;
+      setTimeout(()=>{ trailPath.style.strokeWidth = 18; }, 700);
+    }
+
+    function updateTrail(){
+      // compute normalized coordinates for svg viewBox 0..100
+      const rect = gridEl.getBoundingClientRect();
+      const coords = path.map(idx=>{
+        const [r,c] = rcFromIdx(idx);
+        const cx = (c + 0.5) / n * 100;
+        const cy = (r + 0.5) / n * 100;
+        return [cx,cy];
+      });
+      const d = coords.map((p,i)=> (i===0?`M ${p[0]} ${p[1]}`:`L ${p[0]} ${p[1]}`)).join(' ');
+      trailPath.setAttribute('d', d);
+      ghostPath.setAttribute('d', d);
+
+      // small animated stroke-dash effect while drawing
+      if(d.length){
+        trailPath.style.opacity = 1;
+        trailPath.style.transition = 'none';
+      } else {
+        trailPath.style.opacity = 0;
+      }
+    }
+
+    /* ===== Timer management ===== */
+    function startTimer(){ stopTimer(); secondsElapsed=0; timerLabel.textContent='00:00';
+      timerInterval = setInterval(()=>{ secondsElapsed++; const m = String(Math.floor(secondsElapsed/60)).padStart(2,'0'); const s = String(secondsElapsed%60).padStart(2,'0'); timerLabel.textContent = m+':'+s; }, 1000);
+    }
+    function stopTimer(){ if(timerInterval) clearInterval(timerInterval); timerInterval=null; }
+
+    /* ===== Level loading ===== */
+    function loadLevel(i){
+      currentLevelIndex = i % LEVELS.length;
+      const level = LEVELS[currentLevelIndex];
+      n = level.n;
+      // map numbered positions into 'numbered' array length n*n
+      numbered = new Array(n*n).fill(0);
+      maxNumber = 0;
+      level.numbers.forEach(p=>{ const id = idxFromRC(p.r,p.c); numbered[id] = p.val; maxNumber = Math.max(maxNumber, p.val); });
+
+      // render
+      levelLabel.textContent = (currentLevelIndex+1);
+      renderGrid(); clearPath(); resetMessage();
+      // reset timer & UI
+      stopTimer(); secondsElapsed=0; timerLabel.textContent='00:00';
+    }
+
+    /* ===== Controls wiring ===== */
+    restartBtn.addEventListener('click', ()=>{ clearPath(); resetMessage(); stopTimer(); secondsElapsed=0; timerLabel.textContent='00:00'; });
+    nextBtn.addEventListener('click', ()=>{ loadLevel((currentLevelIndex+1)%LEVELS.length); });
+    themeBtn.addEventListener('click', ()=>{
+      const app = document.getElementById('app'); const t = app.dataset.theme === 'dark' ? 'light':'dark'; app.dataset.theme = t;
+    });
+
+    // pointer events on grid
+    gridEl.addEventListener('pointerdown', (e)=>{ handlePointerDown(e); });
+    window.addEventListener('pointermove', (e)=>{ handlePointerMove(e); });
+    window.addEventListener('pointerup', (e)=>{ handlePointerUp(e); });
+
+    // support touchcancel
+    window.addEventListener('touchcancel', ()=>{ if(drawing) { drawing=false; clearPath(); } });
+
+    // handle window resize to update trail coordinates
+    window.addEventListener('resize', ()=>{ updateTrail(); });
+
+    // initialize
+    buildLevelButtons(); loadLevel(0);
+
+    // small keyboard accessibility: press R to restart, N next, T toggle theme
+    window.addEventListener('keydown',(e)=>{
+      if(e.key.toLowerCase()==='r'){ clearPath(); }
+      if(e.key.toLowerCase()==='n'){ loadLevel((currentLevelIndex+1)%LEVELS.length); }
+      if(e.key.toLowerCase()==='t'){ const app = document.getElementById('app'); app.dataset.theme = app.dataset.theme==='dark'?'light':'dark'; }
+    });
+
+    // expose for debug
+    window.__ZIP = { loadLevel, clearPath };
+  </script>
+</body>
+</html>
+
